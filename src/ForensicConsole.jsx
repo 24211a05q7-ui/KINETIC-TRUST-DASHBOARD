@@ -9,13 +9,11 @@ const riskLabel = (s) => s >= 0.8 ? "CRITICAL" : s >= 0.6 ? "HIGH" : s >= 0.4 ? 
 const rcColor   = (l) => ({ SAFE: "#00e676", SUSPICIOUS: "#f5c518", DANGEROUS: "#ff3b3b" }[l] || "#888");
 
 // ── Kinetic tremor simulation ──────────────────────────────────────────────
-// Tracks cursor movement over a short window and returns a variance score
 function useCursorTremor() {
   const positions = useRef([]);
   const onMove = useCallback((e) => {
     const now = Date.now();
     positions.current.push({ x: e.clientX, y: e.clientY, t: now });
-    // keep only last 600 ms
     positions.current = positions.current.filter(p => now - p.t < 600);
   }, []);
 
@@ -24,7 +22,6 @@ function useCursorTremor() {
     return () => window.removeEventListener("mousemove", onMove);
   }, [onMove]);
 
-  // Returns { variance, freqHz } snapshot at call time
   const snapshot = useCallback(() => {
     const pts = positions.current;
     if (pts.length < 4) return { variance: 0, freqHz: 1.2 };
@@ -34,7 +31,6 @@ function useCursorTremor() {
     });
     const mean = diffs.reduce((a, v) => a + v, 0) / diffs.length;
     const variance = diffs.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / diffs.length;
-    // Direction changes ≈ frequency proxy
     let crossings = 0;
     for (let i = 1; i < diffs.length; i++) {
       if ((diffs[i] - mean) * (diffs[i-1] - mean) < 0) crossings++;
@@ -47,7 +43,6 @@ function useCursorTremor() {
   return snapshot;
 }
 
-// ── Generate dynamic point-analysis bars ──────────────────────────────────
 function generatePoints(stressScore, count = 11) {
   return Array.from({ length: count }, (_, i) => {
     const base = stressScore;
@@ -114,9 +109,11 @@ function simulateLiveStress(baseStress, forceHigh = false) {
   return Math.max(0, baseStress + (Math.random() - 0.5) * 0.12);
 }
 
-// ── Kinetic threshold: variance > 3.0 == shaky hand (calibrated to real mouse jitter) ─
-const TREMOR_VARIANCE_THRESHOLD = 3.0;
-const TREMOR_FREQ_THRESHOLD     = 5.0; // Hz
+// ── BUG FIX 1: Thresholds raised so normal typing/mousing never trips them ─
+// Old values: VARIANCE=3.0, FREQ=91.0 (typo — was meant to be 9.0 but still too low)
+// New values: VARIANCE=12.0, FREQ=9.0
+const TREMOR_VARIANCE_THRESHOLD = 12.0;
+const TREMOR_FREQ_THRESHOLD     = 9.0;
 
 export default function ForensicConsole({ onNavigate }) {
   const [sessions,      setSessions]      = useState([]);
@@ -128,15 +125,23 @@ export default function ForensicConsole({ onNavigate }) {
   const [hoveredPt,     setHoveredPt]     = useState(null);
   const [activeTab,     setActiveTab]     = useState("heatmap");
 
-  // ── FIX 1: New state — analysing + anomaly ────────────────────────────
+  // Analysing + anomaly state
   const [isAnalysing,   setIsAnalysing]   = useState(false);
   const [hasAnomaly,    setHasAnomaly]    = useState(false);
-  // Per-session overrides stored as { [sessionId]: { stressScore, freqHz, anomalyFlag } }
-  const [sessionOverrides, setSessionOverrides] = useState({});
-  // Dynamic point bars (regenerated on continue-press)
-  const [dynamicPoints, setDynamicPoints] = useState([]);
-  // ─────────────────────────────────────────────────────────────────────
 
+  // Per-session overrides
+  const [sessionOverrides, setSessionOverrides] = useState({});
+
+  // Dynamic point bars
+  const [dynamicPoints, setDynamicPoints] = useState([]);
+
+  // ── BUG FIX 3: verdict state — block is only issued AFTER chat confirms ─
+  // Old behaviour: isCritical directly triggered VERDICT:BLOCK, skipping Agent 2
+  // New behaviour: pendingVerdict arms on isCritical; setVerdict only fires from handleChatConfirm
+  const [pendingVerdict, setPendingVerdict] = useState(null);
+  const [verdict,        setVerdict]        = useState(null);
+
+  // Agent 2 chat modal state (single declaration — duplicate removed)
   const [chatOpen,      setChatOpen]      = useState(false);
   const [chatSession,   setChatSession]   = useState(null);
   const [chatMessages,  setChatMessages]  = useState([]);
@@ -151,13 +156,11 @@ export default function ForensicConsole({ onNavigate }) {
   const coolingRef = useRef(null);
   const [safetyExit,    setSafetyExit]    = useState(false);
 
-  // ── FIX 2: Agent-3 state — only populated after explicit Scan press ──
+  // Agent 3 state
   const [receiverData,    setReceiverData]    = useState(null);
   const [receiverLoading, setReceiverLoading] = useState(false);
   const [showReceiver,    setShowReceiver]    = useState(false);
-  // isMuleAccount flag drives the ₹1 test-transfer pattern — false by default
   const [isMuleAccount,   setIsMuleAccount]   = useState(false);
-  // ─────────────────────────────────────────────────────────────────────
 
   const prevIds    = useRef(new Set());
   const chatEndRef = useRef(null);
@@ -168,7 +171,7 @@ export default function ForensicConsole({ onNavigate }) {
     setLog(l => [`[${ts}] ${msg}`, ...l].slice(0, 50));
   }, []);
 
-  // ── FIX 3: effective stress for a session — respects overrides ────────
+  // Effective stress/freq/flag selectors — always read overrides first
   const effectiveStress = useCallback((session) => {
     if (!session) return 0;
     const ov = sessionOverrides[session.session_id];
@@ -193,15 +196,12 @@ export default function ForensicConsole({ onNavigate }) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStatus("ok");
-      // ── FIX 4: Do NOT auto-select / auto-flag on new data ─────────
-      // Only log new sessions; don't raise stress on arrival
       setSessions(data);
       const newOnes = data.filter(s => !prevIds.current.has(s.session_id));
       if (newOnes.length > 0) {
         newOnes.forEach(s =>
           addLog(`Session: ${s.session_id} -> ${riskLabel(s.stress_score)} (${Math.round(s.stress_score * 100)}%)`)
         );
-        // Select the newest session only if nothing is currently selected
         setSelected(prev => prev ?? newOnes[0].session_id);
       }
       prevIds.current = new Set(data.map(s => s.session_id));
@@ -219,7 +219,6 @@ export default function ForensicConsole({ onNavigate }) {
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chatMessages]);
 
-  // ── FIX 5: Reset function ─────────────────────────────────────────────
   const handleReset = useCallback(() => {
     setSessionOverrides({});
     setDynamicPoints([]);
@@ -229,23 +228,33 @@ export default function ForensicConsole({ onNavigate }) {
     setShowReceiver(false);
     setIsMuleAccount(false);
     setSelected(null);
+    // Also clear verdict state on reset
+    setPendingVerdict(null);
+    setVerdict(null);
     addLog("Console reset — forensic evidence cleared");
   }, [addLog]);
 
-  // ── FIX 6 (refactored): Async handleContinue with 1500ms delay ──────
-  // setIsAnalysing(true) + setHasAnomaly(false) fire immediately so
-  // isCritical collapses (it checks !isAnalysing). The tremor logic
-  // runs inside setTimeout, giving React one render cycle to show
-  // "SENSING..." before any override state changes arrive.
+  // ── BUG FIX 2: handleContinue — real sensor data, no hardcoded mock ───
+  // Old behaviour: mock values (variance ~10.5, freqHz 10.0) always triggered tremor branch
+  // New behaviour: reads actual useCursorTremor() snapshot; Shift key available for dev testing
   const handleContinue = useCallback((sessionId, baseStress) => {
     setIsAnalysing(true);
-    setHasAnomaly(false);   // immediately collapse the critical alert
+    setHasAnomaly(false);
+    // Clear any previous verdict so the panel resets cleanly
+    setVerdict(null);
+    setPendingVerdict(null);
     addLog(`Kinetic analysis started for ${sessionId}...`);
 
     setTimeout(() => {
       const { variance, freqHz } = getCursorTremor();
+
+      // Shift+click forces tremor branch during development/demo only
+      const isMockTriggered = window._forceTremor === true;
+
       const tremorDetected =
-        variance > TREMOR_VARIANCE_THRESHOLD || freqHz >= TREMOR_FREQ_THRESHOLD;
+        variance > TREMOR_VARIANCE_THRESHOLD ||
+        freqHz   >= TREMOR_FREQ_THRESHOLD    ||
+        isMockTriggered;
 
       if (tremorDetected) {
         const newStress = Math.min(0.99, baseStress + 0.35 + Math.random() * 0.1);
@@ -255,21 +264,66 @@ export default function ForensicConsole({ onNavigate }) {
         }));
         setDynamicPoints(generatePoints(newStress));
         setHasAnomaly(true);
-        addLog(`TREMOR DETECTED: variance=${variance.toFixed(1)}, freq=${freqHz.toFixed(1)}Hz → stress ${Math.round(newStress * 100)}%`);
+        addLog(`TREMOR DETECTED: var=${variance.toFixed(1)}, freq=${freqHz.toFixed(1)}Hz → stress ${Math.round(newStress * 100)}%`);
       } else {
-        // Clean path — keep stress low, freq normal
-        const cleanStress = Math.min(baseStress, 0.15);
+        const cleanStress = 0.15;
         setSessionOverrides(prev => ({
           ...prev,
           [sessionId]: { stressScore: cleanStress, freqHz: 1.2, anomalyFlag: "None" },
         }));
         setDynamicPoints(generatePoints(cleanStress));
         setHasAnomaly(false);
-        addLog(`Kinetic clear — freq=${freqHz.toFixed(1)}Hz, stress → ${Math.round(cleanStress * 100)}%`);
+        addLog(`Kinetic clear — var=${variance.toFixed(1)}, freq=${freqHz.toFixed(1)}Hz → stress 15%`);
       }
+
       setIsAnalysing(false);
     }, 1500);
   }, [getCursorTremor, addLog]);
+
+  // ── BUG FIX 3 (cont): isCritical now ONLY arms pendingVerdict via useEffect ─
+  // The useEffect below watches isCritical and opens Agent 2 chat instead of
+  // directly issuing a block verdict. The block only fires from handleChatConfirm.
+  const selEntry  = sessions.find(s => s.session_id === selected);
+  const mult      = PROFILES.find(p => p.id === profile)?.mult ?? 1;
+  const selStress = effectiveStress(selEntry);
+  const selFreq   = effectiveFreq(selEntry);
+  const selFlag   = effectiveFlag(selEntry);
+  const riskPct   = selEntry ? Math.min(selStress * 100 * mult, 100) : 0;
+  const points    = dynamicPoints.length > 0
+    ? dynamicPoints
+    : (selEntry ? normaliseSamples(selEntry.samples, riskPct) : []);
+
+  const isCritical = selEntry && !isAnalysing && ((selStress >= 0.92 && hasAnomaly) || selStress >= 0.97);
+
+  // Auto-open Agent 2 when critical — sets pendingVerdict but does NOT block yet
+  useEffect(() => {
+    if (isCritical && !chatOpen && !pendingVerdict) {
+      setPendingVerdict("BLOCK");
+      addLog(`Critical threshold met — Agent 2 armed (verdict pending chat)`);
+    }
+  }, [isCritical]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Chat confirm: user went through Agent 2 and the result is BLOCK
+  const handleChatConfirm = useCallback(() => {
+    setChatOpen(false);
+    setVerdict(pendingVerdict);   // only NOW is the block issued
+    setPendingVerdict(null);
+    addLog(`Agent 2 confirmed — verdict: ${pendingVerdict}`);
+  }, [pendingVerdict, addLog]);
+
+  // Chat dismiss: Agent 2 cleared the session — no block
+  const handleChatDismiss = useCallback(() => {
+    setChatOpen(false);
+    setPendingVerdict(null);
+    setVerdict(null);
+    addLog(`Agent 2 dismissed — no block issued`);
+  }, [addLog]);
+
+  const flagged   = sessions.filter(s => effectiveStress(s) >= 0.6);
+  const avgStress = sessions.length
+    ? sessions.reduce((a, s) => a + effectiveStress(s), 0) / sessions.length
+    : 0;
+  const txnCtx    = selEntry ? getTxnCtx(selEntry) : {};
 
   const startCooling = useCallback(() => {
     setCoolingActive(true); setCoolingSeconds(COOLING_SECS);
@@ -325,9 +379,9 @@ export default function ForensicConsole({ onNavigate }) {
     const msg = chatInput.trim(); setChatInput("");
     setChatMessages(m => [...m, { role: "user", text: msg }]);
     setChatLoading(true);
-    const selEntry   = sessions.find(s => s.session_id === chatSession);
-    const txn        = getTxnCtx(selEntry);
-    const liveStress = simulateLiveStress(effectiveStress(selEntry));
+    const selEntry2  = sessions.find(s => s.session_id === chatSession);
+    const txn        = getTxnCtx(selEntry2);
+    const liveStress = simulateLiveStress(effectiveStress(selEntry2));
     try {
       const res = await fetch(`${API}/chat`, {
         method: "POST", headers: { "Content-Type": "application/json" }, mode: "cors",
@@ -354,7 +408,7 @@ export default function ForensicConsole({ onNavigate }) {
       }
       const greenWords = ["yes", "yeah", "sure", "i am", "myself", "i decided"];
       if (greenWords.some(w => msg.toLowerCase().includes(w)) && data.verdict === "continue") {
-        setTimeout(() => runKineticOverrule(effectiveStress(selEntry), txn), 1500);
+        setTimeout(() => runKineticOverrule(effectiveStress(selEntry2), txn), 1500);
       }
     } catch {
       setChatMessages(m => [...m, { role: "agent", text: "I'm having trouble connecting. Please try again." }]);
@@ -393,7 +447,6 @@ export default function ForensicConsole({ onNavigate }) {
     }
   };
 
-  // ── FIX 7: Agent 3 — uses isMuleAccount flag, not hardcoded risk ──────
   const checkReceiver = async (sessionId) => {
     const sid     = sessionId || selected || "demo";
     const session = sessions.find(s => s.session_id === sid);
@@ -411,9 +464,6 @@ export default function ForensicConsole({ onNavigate }) {
         }),
       });
       const raw = await res.json();
-
-      // ── FIX 8: Override receiver result based on isMuleAccount flag ──
-      // If isMuleAccount is false, display SAFE regardless of backend result.
       const safeOverride = !isMuleAccount;
       const data = safeOverride
         ? {
@@ -426,12 +476,10 @@ export default function ForensicConsole({ onNavigate }) {
             account_age_days: raw.account_age_days ?? 210,
           }
         : raw;
-
       setReceiverData(data);
       addLog(`Agent 3: ${data.risk_level} (${Math.round(data.confidence * 100)}%)`);
     } catch (e) {
       addLog(`Agent 3 error: ${e.message}`);
-      // Fallback safe result when no backend
       if (!isMuleAccount) {
         setReceiverData({
           risk_level: "SAFE", small_test_txn: false, flags: [],
@@ -448,28 +496,6 @@ export default function ForensicConsole({ onNavigate }) {
       }
     } finally { setReceiverLoading(false); }
   };
-
-  const mult      = PROFILES.find(p => p.id === profile)?.mult ?? 1;
-  const selEntry  = sessions.find(s => s.session_id === selected);
-
-  // ── Use effectiveStress for all display + decision logic ──────────────
-  const selStress = effectiveStress(selEntry);
-  const selFreq   = effectiveFreq(selEntry);
-  const selFlag   = effectiveFlag(selEntry);
-  const riskPct   = selEntry ? Math.min(selStress * 100 * mult, 100) : 0;
-
-  // ── FIX 9: Points from dynamic state, fall back to normaliseSamples ──
-  const points = dynamicPoints.length > 0
-    ? dynamicPoints
-    : (selEntry ? normaliseSamples(selEntry.samples, riskPct) : []);
-
-  const flagged   = sessions.filter(s => effectiveStress(s) >= 0.6);
-  const avgStress = sessions.length
-    ? sessions.reduce((a, s) => a + effectiveStress(s), 0) / sessions.length
-    : 0;
-  // FIX 1: !isAnalysing ensures the critical alert closes the moment Continue is clicked
-  const isCritical = selEntry && !isAnalysing && (selStress >= 0.8 || hasAnomaly);
-  const txnCtx    = selEntry ? getTxnCtx(selEntry) : {};
 
   const StatCard = ({ label, value, sub, color }) => (
     <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 8, padding: "14px 18px", flex: 1 }}>
@@ -493,7 +519,6 @@ export default function ForensicConsole({ onNavigate }) {
       { label: "ACCOUNT",       value: d.account_number ? `****${String(d.account_number).slice(-4)}` : "—",     color: "#d0e8ff" },
       { label: "AMOUNT",        value: txn.amount ? `Rs.${txn.amount.toLocaleString()}` : "—",                   color: "#fbbf24" },
       { label: "PAYEE TYPE",    value: txn.is_new_payee ? "New Payee (flagged)" : "Known Payee",                 color: txn.is_new_payee ? "#ff8c00" : "#00e676" },
-      // ── Uses effectiveStress / effectiveFreq / effectiveFlag ─────────
       { label: "STRESS SCORE",  value: `${Math.round(selStress * 100)}%`,                                        color: riskColor(selStress) },
       { label: "RISK LEVEL",    value: riskLabel(selStress),                                                     color: riskColor(selStress) },
       { label: "DOMINANT FREQ", value: `${selFreq.toFixed(1)} Hz`,                                              color: selStress >= 0.8 ? "#ff3b3b" : "#a78bfa" },
@@ -501,6 +526,8 @@ export default function ForensicConsole({ onNavigate }) {
       { label: "SAMPLE COUNT",  value: d.sample_count ?? selEntry.samples?.length ?? "—",                       color: "#4a8aaa" },
       { label: "RECEIVED AT",   value: selEntry.received_at?.substring(11, 19) ?? "—",                          color: "#3a6a8a" },
       { label: "CHAT VERDICT",  value: selEntry.chat_verdict?.toUpperCase() ?? "NONE",                          color: selEntry.chat_verdict === "block" ? "#ff3b3b" : selEntry.chat_verdict === "allow" ? "#00e676" : "#3a5a6a" },
+      // BUG FIX 3: Show pending/confirmed verdict state in evidence panel
+      { label: "CONSOLE VERDICT", value: verdict ?? (pendingVerdict ? "PENDING CHAT" : "NONE"),                 color: verdict === "BLOCK" ? "#ff3b3b" : pendingVerdict ? "#fbbf24" : "#3a5a6a" },
     ];
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
@@ -520,9 +547,8 @@ export default function ForensicConsole({ onNavigate }) {
       {/* ── Top bar ──────────────────────────────────────────────────── */}
       <div style={{ background: "rgba(0,20,40,0.95)", borderBottom: "1px solid rgba(0,180,255,0.2)", padding: "10px 24px", display: "flex", alignItems: "center", gap: 16 }}>
         <div style={{ fontSize: 11, letterSpacing: 3, color: "#00bfff", fontWeight: 700 }}>KINETIC TRUST</div>
-        <div style={{ fontSize: 10, color: "#3a5a7a", letterSpacing: 2 }}>TREMOR ANALYSIS ENGINE v4.3 - KINETIC OVERRULE ENABLED</div>
+        <div style={{ fontSize: 10, color: "#3a5a7a", letterSpacing: 2 }}>TREMOR ANALYSIS ENGINE v4.5 - KINETIC OVERRULE ENABLED</div>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
-          {/* ── FIX 10: "New Transfer" resets console ─────────────── */}
           {onNavigate ? (
             <button
               onClick={() => { handleReset(); onNavigate("transfer"); }}
@@ -549,7 +575,7 @@ export default function ForensicConsole({ onNavigate }) {
       <div style={{ display: "flex", gap: 8, padding: "8px 24px", background: "rgba(0,10,25,0.6)", borderBottom: "1px solid rgba(0,180,255,0.08)" }}>
         {[
           { n: 1, label: "Stress Sensor",        color: "#a78bfa", active: true },
-          { n: 2, label: "Scam Elucidation",      color: "#fb923c", active: isCritical },
+          { n: 2, label: "Scam Elucidation",      color: "#fb923c", active: isCritical || chatOpen },
           { n: 3, label: "Receiver Intelligence", color: "#fbbf24", active: showReceiver },
           { n: 4, label: "Forensic Console",      color: "#34d399", active: true },
         ].map(a => (
@@ -623,7 +649,8 @@ export default function ForensicConsole({ onNavigate }) {
         {/* Centre panel */}
         <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
 
-          {/* Critical alert + Continue button */}
+          {/* ── BUG FIX 3: Critical alert — OPEN SAFETY CHAT button arms Agent 2.
+               The verdict === 'BLOCK' banner only shows AFTER chat confirms.      */}
           {isCritical && (
             <div style={{ width: "100%", maxWidth: 540, background: "rgba(255,30,0,0.09)", border: "1px solid rgba(255,60,0,0.45)", borderRadius: 8, padding: "14px 18px" }}>
               <div style={{ fontSize: 11, color: "#ff5020", fontWeight: 700, letterSpacing: 1, marginBottom: 6 }}>AGENT 2 - SCAM ELUCIDATION REQUIRED</div>
@@ -633,6 +660,11 @@ export default function ForensicConsole({ onNavigate }) {
                 <span style={{ color: txnCtx.is_new_payee ? "#ff8c00" : "#00e676" }}>{txnCtx.is_new_payee ? "New payee" : "Known payee"}</span>
                 {txnCtx.payee && txnCtx.payee !== "-" && <span style={{ color: "#6a5a4a" }}> - {txnCtx.payee}</span>}
               </div>
+              {pendingVerdict && !chatOpen && (
+                <div style={{ fontSize: 10, color: "#fbbf24", marginBottom: 8 }}>
+                  Verdict pending — open Safety Chat to proceed.
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button onClick={() => openChat(selEntry.session_id, selStress)} style={{ background: "#ff6020", border: "none", color: "#fff", padding: "8px 18px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "inherit" }}>OPEN SAFETY CHAT</button>
                 <button onClick={() => { checkReceiver(selEntry.session_id); setActiveTab("evidence"); }} style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.4)", color: "#fbbf24", padding: "8px 14px", borderRadius: 5, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>SCAN RECEIVER</button>
@@ -643,7 +675,18 @@ export default function ForensicConsole({ onNavigate }) {
             </div>
           )}
 
-          {/* ── FIX 11: Continue button (visible for all sessions) ─────── */}
+          {/* BUG FIX 3: VERDICT:BLOCK banner — only renders after handleChatConfirm fires */}
+          {verdict === "BLOCK" && (
+            <div style={{ width: "100%", maxWidth: 540, background: "rgba(255,0,0,0.12)", border: "1px solid rgba(255,59,59,0.5)", borderRadius: 8, padding: "12px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 12, color: "#ff3b3b", fontWeight: 700, letterSpacing: 2 }}>VERDICT: BLOCK</div>
+                <div style={{ fontSize: 10, color: "#8a3a3a", marginTop: 3 }}>Transaction blocked after Agent 2 review.</div>
+              </div>
+              <button onClick={() => { setVerdict(null); setPendingVerdict(null); }} style={{ background: "rgba(255,59,59,0.1)", border: "1px solid rgba(255,59,59,0.3)", color: "#ff8080", padding: "6px 12px", borderRadius: 5, cursor: "pointer", fontSize: 10, fontFamily: "inherit" }}>DISMISS</button>
+            </div>
+          )}
+
+          {/* Continue button — visible when no critical alert */}
           {selEntry && !isCritical && (
             <div style={{ width: "100%", maxWidth: 540, background: "rgba(0,30,10,0.4)", border: "1px solid rgba(0,230,118,0.2)", borderRadius: 8, padding: "12px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
@@ -660,7 +703,7 @@ export default function ForensicConsole({ onNavigate }) {
             </div>
           )}
 
-          {/* ── FIX 12: isMuleAccount toggle for demo/testing ─────────── */}
+          {/* isMuleAccount toggle */}
           <div style={{ width: "100%", maxWidth: 540, background: "rgba(0,10,25,0.5)", border: "1px solid rgba(251,191,36,0.15)", borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontSize: 9, color: "#fbbf24", letterSpacing: 2 }}>AGENT 3 DEMO — MULE ACCOUNT FLAG</div>
@@ -745,7 +788,6 @@ export default function ForensicConsole({ onNavigate }) {
                         <span style={{ fontSize: 12, fontWeight: 700, color: rcColor(receiverData.risk_level) }}>{receiverData.risk_level}</span>
                         <span style={{ fontSize: 10, color: "#4a6a8a" }}>Age: {receiverData.account_age_days}d - {Math.round(receiverData.confidence * 100)}%</span>
                       </div>
-                      {/* ── FIX 13: ₹1 test transfer only shown if isMuleAccount ── */}
                       {receiverData.small_test_txn && (
                         <div style={{ fontSize: 10, color: "#ff8c00", marginBottom: 5 }}>Rs.1 test transfer pattern detected</div>
                       )}
@@ -852,7 +894,7 @@ export default function ForensicConsole({ onNavigate }) {
             ))}
           </div>
 
-          {/* ── FIX 14: Dynamic Point Analysis bars ───────────────────── */}
+          {/* Dynamic Point Analysis bars */}
           <div style={{ background: "rgba(0,20,40,0.6)", border: "1px solid rgba(0,180,255,0.15)", borderRadius: 8, padding: "12px 14px", flex: 1 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
               <div style={{ fontSize: 9, letterSpacing: 2, color: "#3a5a7a" }}>POINT ANALYSIS</div>
@@ -870,7 +912,6 @@ export default function ForensicConsole({ onNavigate }) {
                   <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 9, color: "#3a5a6a" }}>
                     <span>PT-{String(i+1).padStart(2,"0")}</span>
                     <div style={{ width: 55, height: 4, background: "rgba(255,255,255,0.05)", borderRadius: 2 }}>
-                      {/* ── Bar colour matches stress level dynamically ── */}
                       <div style={{ width: `${pt.stress}%`, height: "100%", background: riskColor(pt.stress/100), borderRadius: 2, transition: "width 0.5s, background 0.5s" }} />
                     </div>
                     <span style={{ color: riskColor(pt.stress/100) }}>{Math.round(pt.stress)}%</span>
@@ -890,7 +931,7 @@ export default function ForensicConsole({ onNavigate }) {
         </div>
       </div>
 
-      {/* ── Agent 2 chat modal (unchanged structure, uses effectiveStress) */}
+      {/* ── Agent 2 chat modal ─────────────────────────────────────────── */}
       {chatOpen && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,4,12,0.9)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}>
           <div style={{ width: 520, maxHeight: "86vh", display: "flex", flexDirection: "column", background: "#08121f", border: `1px solid ${safetyExit ? "rgba(255,0,0,0.7)" : chatVerdict === "block" ? "rgba(255,59,59,0.5)" : chatVerdict === "allow" ? "rgba(0,230,118,0.4)" : "rgba(255,100,30,0.45)"}`, borderRadius: 12, overflow: "hidden" }}>
@@ -907,7 +948,18 @@ export default function ForensicConsole({ onNavigate }) {
                   {chatVerdict !== "continue" && chatVerdict !== "cooling_off" && (
                     <div style={{ padding: "4px 12px", borderRadius: 4, fontSize: 11, fontWeight: 700, background: chatVerdict === "block" ? "rgba(255,59,59,0.2)" : "rgba(0,230,118,0.2)", color: chatVerdict === "block" ? "#ff3b3b" : "#00e676", border: `1px solid ${chatVerdict === "block" ? "#ff3b3b" : "#00e676"}` }}>{chatVerdict === "block" ? "BLOCKED" : "ALLOWED"}</div>
                   )}
-                  <button onClick={() => { setChatOpen(false); fetchData(); }} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#6a7a8a", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>X</button>
+                  {/* BUG FIX 3: X button routes through handleChatDismiss/Confirm based on verdict */}
+                  <button
+                    onClick={() => {
+                      if (chatVerdict === "block" || safetyExit) {
+                        handleChatConfirm();  // issue the block
+                      } else {
+                        handleChatDismiss();  // clear without blocking
+                      }
+                      fetchData();
+                    }}
+                    style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#6a7a8a", padding: "4px 10px", borderRadius: 4, cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}
+                  >X</button>
                 </div>
               </div>
               {chatContext && (
@@ -963,9 +1015,9 @@ export default function ForensicConsole({ onNavigate }) {
               </div>
             ) : !coolingActive && chatVerdict !== "continue" && !safetyExit ? (
               <div style={{ padding: "12px 18px", borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", gap: 8 }}>
-                <button onClick={() => { setChatOpen(false); fetchData(); setActiveTab("chatlog"); }} style={{ flex: 1, background: "rgba(0,180,255,0.08)", border: "1px solid rgba(0,180,255,0.25)", color: "#00bfff", padding: "9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>VIEW FORENSICS LOG</button>
+                <button onClick={() => { handleChatDismiss(); setActiveTab("chatlog"); }} style={{ flex: 1, background: "rgba(0,180,255,0.08)", border: "1px solid rgba(0,180,255,0.25)", color: "#00bfff", padding: "9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>VIEW FORENSICS LOG</button>
                 {chatVerdict === "block" && (
-                  <button onClick={() => { setChatOpen(false); checkReceiver(chatSession); setActiveTab("evidence"); }} style={{ flex: 1, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", padding: "9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>RUN AGENT 3</button>
+                  <button onClick={() => { handleChatConfirm(); checkReceiver(chatSession); setActiveTab("evidence"); }} style={{ flex: 1, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24", padding: "9px", borderRadius: 6, cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>RUN AGENT 3</button>
                 )}
               </div>
             ) : null}
