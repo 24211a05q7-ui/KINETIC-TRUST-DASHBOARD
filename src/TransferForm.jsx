@@ -10,7 +10,7 @@
 
 import { useState, useEffect } from "react";
 
-const API = "http://localhost:8000";
+const API = "https://kinetic-trust-dashboard.onrender.com";
 
 // ── Silent sensor simulation ─────────────────────────────────────────────────
 // In production this reads the device accelerometer.
