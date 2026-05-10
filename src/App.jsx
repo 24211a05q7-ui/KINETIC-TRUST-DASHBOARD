@@ -1,5 +1,5 @@
 import { useState } from "react";
-import TransferForm from "./TempComponent";
+import TransferForm from "./TransferForm";
 import ForensicConsole from "./ForensicConsole";
 
 export default function App() {
