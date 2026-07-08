@@ -1,16 +1,104 @@
-# React + Vite
+# KineticTrust
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> AI-powered behavioral fraud detection system for secure digital payment transactions.
 
-Currently, two official plugins are available:
+## Overview
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+KineticTrust is a full-stack prototype designed to enhance the security of digital payment systems by analyzing behavioral signals during transactions.
 
-## React Compiler
+Unlike traditional fraud detection systems that rely only on transaction history, KineticTrust combines behavioral analysis with transaction context to identify potentially risky situations such as coercion or suspicious payment activity.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+This project is being continuously improved with better software architecture, scalable backend design, and enhanced AI-assisted risk analysis.
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+## Features
+
+- Behavioral risk analysis
+- Transaction monitoring dashboard
+- Interactive forensic console
+- AI-assisted fraud insights
+- REST API backend
+- Modular frontend architecture
+- Real-time risk visualization
+
+---
+
+## Tech Stack
+
+### Frontend
+
+- React
+- Vite
+- Tailwind CSS
+
+### Backend
+
+- FastAPI
+- Python
+
+### Database
+
+- MongoDB
+
+### Tools
+
+- Git
+- GitHub
+- VS Code
+- Postman
+- Render
+- Vercel
+
+---
+
+## Project Structure
+
+```
+kinetic-trust/
+
+frontend/
+backend/
+README.md
+```
+
+---
+
+## Current Status
+
+This project is actively under development.
+
+Current work focuses on:
+
+- Backend architecture improvements
+- Better API design
+- Logging
+- Configuration management
+- Composite behavioral risk engine
+- Improved documentation
+
+---
+
+## Future Roadmap
+
+- Composite Risk Engine
+- User authentication
+- Database persistence
+- Device intelligence
+- Transaction history analysis
+- AI-powered risk explanations
+- Production deployment
+
+---
+
+## Author
+
+**Joshna Karajada**
+
+B.Tech Computer Science Engineering
+
+BVRIT Narsapur
+
+LinkedIn:
+
+https://www.linkedin.com/in/joshna-karajada
