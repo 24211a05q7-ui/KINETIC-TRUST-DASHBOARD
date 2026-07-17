@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
-const API        = "http://localhost:8000";
+const API        = "https://kinetic-trust-dashboard.onrender.com";
 const POLL_MS    = 3000;
 const COOLING_SECS = 60;
 
