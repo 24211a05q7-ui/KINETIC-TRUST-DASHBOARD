@@ -15,17 +15,60 @@ const API = "https://kinetic-trust-dashboard.onrender.com";
 // ── Silent sensor simulation ─────────────────────────────────────────────────
 // In production this reads the device accelerometer.
 // Here we generate realistic high-stress data automatically.
-function generateSensorSamples() {
-  // Always generate a high-stress pattern for the demo
-  // (simulates a user whose hand is trembling during a large transfer)
-  const freq = 8.5 + Math.random() * 2;     // 8.5–10.5 Hz — above clinical threshold
-  const amp  = 0.38 + Math.random() * 0.1;  // high amplitude
-  const n = 60, fs = 120.0, dt = 1 / fs;
+function generateSensorSamples(amount = 0, isNewPayee = false) {
+  const n = 60;
+  const fs = 120.0;
+  const dt = 1 / fs;
+
+  let freq;
+  let amp;
+
+  // Small trusted payment
+  if (amount <= 1000 && !isNewPayee) {
+    freq = 1.5 + Math.random() * 1.0;      // 1.5–2.5 Hz
+    amp = 0.01 + Math.random() * 0.03;     // Very steady
+  }
+
+  // Normal payment
+  else if (amount <= 5000 && !isNewPayee) {
+    freq = 2.5 + Math.random() * 1.0;      // 2.5–3.5 Hz
+    amp = 0.04 + Math.random() * 0.03;
+  }
+
+  // Slightly nervous
+  else if (amount <= 10000) {
+    freq = 4.5 + Math.random() * 1.0;      // 4.5–5.5 Hz
+    amp = 0.08 + Math.random() * 0.05;
+  }
+
+  // Large payment to new payee
+  else if (amount <= 25000 || isNewPayee) {
+    freq = 6.5 + Math.random() * 1.0;      // 6.5–7.5 Hz
+    amp = 0.16 + Math.random() * 0.05;
+  }
+
+  // Extremely suspicious
+  else {
+    freq = 8.5 + Math.random() * 1.5;      // 8.5–10 Hz
+    amp = 0.30 + Math.random() * 0.10;
+  }
+
   return Array.from({ length: n }, (_, i) => ({
-    t: parseFloat((i * dt).toFixed(4)),
-    x: parseFloat((0.5 + amp * Math.sin(2 * Math.PI * 0.8 * i * dt + 0.3)).toFixed(4)),
-    y: parseFloat((0.2 + (i / n) * 0.6).toFixed(4)),
-    z: parseFloat((amp * Math.sin(2 * Math.PI * freq * i * dt)).toFixed(5)),
+    t: Number((i * dt).toFixed(4)),
+    x: Number(
+      (
+        0.5 +
+        amp *
+          Math.sin(2 * Math.PI * 0.8 * i * dt + 0.3)
+      ).toFixed(4)
+    ),
+    y: Number((0.2 + (i / n) * 0.6).toFixed(4)),
+    z: Number(
+      (
+        amp *
+        Math.sin(2 * Math.PI * freq * i * dt)
+      ).toFixed(5)
+    ),
   }));
 }
 
@@ -255,7 +298,10 @@ export default function TransferForm({ onNavigate }) {
     setPhase("analysing");
 
     // 1. Generate sensor data silently in the background
-    const samples   = generateSensorSamples();
+    const samples = generateSensorSamples(
+    Number(form.amount),
+    form.isNewPayee
+    );
     const sessionId = `TXN_${Date.now()}`;
 
     // 2. Send form data + sensor data together to /analyze
